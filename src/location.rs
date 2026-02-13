@@ -1,4 +1,6 @@
-/// Zero-based offset of bytes
+use std::ops;
+
+/// Zero-based offset of bytes, only BYTES
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Offset(usize);
 
@@ -10,11 +12,51 @@ impl Offset {
     pub fn raw(&self) -> usize {
         self.0
     }
+
+    pub fn add(self, that: Self) -> Self {
+        Self(self.raw() + that.raw())
+    }
+
+    pub fn minus(self, that: Self) -> Self {
+        Self(self.raw() - that.raw())
+    }
 }
 
 impl From<usize> for Offset {
     fn from(value: usize) -> Self {
         Offset::new(value)
+    }
+}
+
+impl ops::Add for Offset {
+    type Output = Offset;
+
+    fn add(self, rhs: Offset) -> Self::Output {
+        self.add(rhs)
+    }
+}
+
+impl ops::Add<usize> for Offset {
+    type Output = Offset;
+
+    fn add(self, rhs: usize) -> Self::Output {
+        self.add(rhs.into())
+    }
+}
+
+impl ops::Sub for Offset {
+    type Output = Offset;
+
+    fn sub(self, rhs: Self) -> Self::Output {
+        self.minus(rhs)
+    }
+}
+
+impl ops::Sub<usize> for Offset {
+    type Output = Offset;
+
+    fn sub(self, rhs: usize) -> Self::Output {
+        self.minus(rhs.into())
     }
 }
 
