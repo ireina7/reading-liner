@@ -2,7 +2,7 @@ use std::ops;
 
 /// Zero-based offset of bytes, only BYTES
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct Offset(usize);
+pub struct Offset(pub usize);
 
 impl Offset {
     pub fn new(raw: usize) -> Self {
@@ -24,7 +24,7 @@ impl Offset {
 
 impl From<usize> for Offset {
     fn from(value: usize) -> Self {
-        Offset::new(value)
+        Offset(value)
     }
 }
 
@@ -41,6 +41,18 @@ impl ops::Add<usize> for Offset {
 
     fn add(self, rhs: usize) -> Self::Output {
         self.add(rhs.into())
+    }
+}
+
+impl ops::AddAssign for Offset {
+    fn add_assign(&mut self, rhs: Self) {
+        self.0 += rhs.raw();
+    }
+}
+
+impl ops::AddAssign<usize> for Offset {
+    fn add_assign(&mut self, rhs: usize) {
+        self.0 += rhs;
     }
 }
 

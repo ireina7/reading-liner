@@ -1,7 +1,6 @@
-#![allow(dead_code)]
 use crate::{
     index::{self, Index},
-    location::{line_column, Offset},
+    location::{Offset, line_column},
 };
 use std::io;
 
@@ -12,21 +11,28 @@ pub struct Stream<'index, Reader> {
 
     base: usize, // For future use
     index: &'index mut Index,
-    next_offset: usize,
+    next_offset: Offset,
     current_line: usize,
 }
 
 impl<'index, R> Stream<'index, R> {
-    const DEFAULT_BUF_SIZE: usize = 1024;
+    pub fn new(reader: R, index: &'index mut Index) -> Self {
+        Self {
+            reader,
+            base: 0,
+            index,
+            next_offset: 0.into(),
+            current_line: 0,
+        }
+    }
+
+    pub fn get_ref(&self) -> &R {
+        &self.reader
+    }
 
     #[inline]
     pub fn base(&self) -> usize {
         self.base
-    }
-
-    #[inline]
-    pub fn line_offset(&self, line: usize) -> Option<Offset> {
-        self.index.query().get_line_offset(line)
     }
 
     #[inline]
@@ -41,16 +47,6 @@ impl<'index, R> Stream<'index, R> {
 }
 
 impl<'index, R: io::Read> Stream<'index, R> {
-    pub fn new(reader: R, index: &'index mut Index) -> Self {
-        Self {
-            reader,
-            base: 0,
-            index,
-            next_offset: 0,
-            current_line: 0,
-        }
-    }
-
     #[inline]
     pub fn set_base(&mut self, base: usize) {
         self.base = base;
@@ -64,11 +60,58 @@ impl<'index, R: io::Read> Stream<'index, R> {
     /// Read length
     #[inline]
     pub fn read_len(&self) -> usize {
-        self.next_offset
+        self.next_offset.raw()
+    }
+
+    /// Try to get more bytes and update states
+    fn forward(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        let n = self.reader.read(buf)?;
+
+        for (offset, b) in buf.iter().take(n).enumerate() {
+            if *b == b'\n' {
+                self.current_line += 1;
+                self.index.add_next_line(self.next_offset + offset + 1); // next line begin
+                continue;
+            }
+        }
+        self.next_offset += n;
+        Ok(n)
+    }
+
+    /// Get line and column number from offset
+    /// NOTE: this method may cause extra reading when the offset input cannot find a location.
+    pub fn locate(&mut self, offset: Offset, buf: &mut [u8]) -> io::Result<line_column::ZeroBased> {
+        let line = self.locate_line(offset, buf)?;
+        let line_offset = self.query().get_line_offset(line).unwrap();
+        let col = offset - line_offset;
+        Ok((line, col.raw()).into())
+    }
+
+    /// Locate line of byte offset
+    /// NOTE: this method may cause extra reading when the offset input cannot find a location.
+    pub fn locate_line(&mut self, offset: Offset, buf: &mut [u8]) -> io::Result<usize> {
+        let mut begin = 0;
+        loop {
+            let n = self.index.len();
+            if let Some(i) = self.query().range_from(begin..).locate_line(offset) {
+                break Ok(begin + i);
+            }
+            if n > 0 {
+                begin = n - 1;
+            }
+
+            if self.forward(buf)? == 0 {
+                if offset < self.next_offset {
+                    break Ok(self.current_line);
+                }
+                break Err(io_error("Invalid offset, exceed EOF"));
+            }
+        }
     }
 
     /// Get offset from line and column number
-    pub fn offset_of(
+    /// NOTE: this method may cause extra reading when the location input cannot find a offset.
+    pub fn encode(
         &mut self,
         line_index: line_column::ZeroBased,
         buf: &mut [u8],
@@ -85,72 +128,6 @@ impl<'index, R: io::Read> Stream<'index, R> {
         }
     }
 
-    /// Get line and column number from offset
-    pub fn locate(&mut self, offset: Offset, buf: &mut [u8]) -> io::Result<line_column::ZeroBased> {
-        let line = self.locate_line(offset, buf)?;
-        let line_offset = self.query().get_line_offset(line).unwrap();
-        let col = offset - line_offset;
-        Ok((line, col.raw()).into())
-    }
-
-    /// Try to get line of offset without reading
-    fn try_line_of(&self, offset: Offset) -> Option<usize> {
-        self.query().locate_line(offset)
-    }
-
-    /// Try to get line index of offset
-    pub fn try_line_index(&self, offset: Offset) -> Option<line_column::ZeroBased> {
-        let line = self.try_line_of(offset)?;
-        let line_offset = self.query().get_line_offset(line).unwrap();
-        let col = offset - line_offset;
-        Some((line, col.raw()).into())
-    }
-
-    /// Try to get offset from (line, column)
-    pub fn try_offset_of(&mut self, line_index: line_column::ZeroBased) -> Option<Offset> {
-        let (line, col) = line_index.raw();
-        self.query()
-            .get_line_offset(line)
-            .map(|offset| offset + col)
-    }
-
-    /// Get line of offset
-    pub fn locate_line(&mut self, offset: Offset, buf: &mut [u8]) -> io::Result<usize> {
-        let mut begin = 0;
-        loop {
-            let n = self.index.len();
-            if let Some(i) = self.query().from_range_from(begin..).locate_line(offset) {
-                break Ok(begin + i);
-            }
-            if n > 0 {
-                begin = n - 1;
-            }
-
-            if self.forward(buf)? == 0 {
-                if offset.raw() < self.next_offset {
-                    break Ok(self.current_line);
-                }
-                break Err(io_error("Invalid offset, exceed EOF"));
-            }
-        }
-    }
-
-    /// Try to get more bytes and update states
-    fn forward(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        let n = self.reader.read(buf)?;
-
-        for (offset, b) in buf.iter().take(n).enumerate() {
-            if *b == b'\n' {
-                self.current_line += 1;
-                self.index
-                    .next_line(Offset::new(self.next_offset + offset + 1)); // next line begin
-                continue;
-            }
-        }
-        self.next_offset += n;
-        Ok(n)
-    }
-
     /// Drain the reader, consume the reader
     pub fn drain(&mut self, buf: &mut [u8]) -> io::Result<()> {
         loop {
@@ -162,6 +139,7 @@ impl<'index, R: io::Read> Stream<'index, R> {
     }
 }
 
+/// You can use [Stream] as a normal [io::Read] and recording index at the same time.
 impl<'index, R: io::Read> io::Read for Stream<'index, R> {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         self.forward(buf)
@@ -195,33 +173,29 @@ mod test {
         let stream = Stream::new(reader.as_bytes(), &mut index);
         let mut reader = BufReader::new(stream);
         let mut buf = String::new();
-        let src = reader.read_to_string(&mut buf);
-        dbg!(buf);
+        reader.read_to_string(&mut buf).unwrap();
 
-        let ans = reader.get_ref().query().locate(Offset::new(20));
+        let ans = reader.get_ref().query().locate(Offset(20));
         assert!(ans.is_some());
         assert_eq!(ans.unwrap(), (2, 5).into());
-        // dbg!(stream);
     }
 
     #[test]
     fn test_stream_file() {
-        let file = File::open("/Users/comcx/Workspace/Repo/stream-locate-converter/Cargo.toml")
-            .expect("Failed to open file");
+        let file = File::open("Cargo.toml").expect("Failed to open file");
         let mut index = Index::new_from_zero();
         let mut stream = Stream::new(file, &mut index);
         let mut buf = vec![b'\0'; 100];
-        let ans = stream.locate(Offset::new(50), &mut buf);
+        let ans = stream.locate(Offset(50), &mut buf);
         dbg!(ans);
 
-        let ans = stream.locate(Offset::new(20), &mut buf);
+        let ans = stream.locate(Offset(20), &mut buf);
         dbg!(ans);
     }
 
     #[test]
     fn test_stream_drain() {
-        let file = File::open("/Users/comcx/Workspace/Repo/stream-locate-converter/Cargo.toml")
-            .expect("Failed to open file");
+        let file = File::open("Cargo.toml").expect("Failed to open file");
         let mut index = Index::new_from_zero();
         let mut stream = Stream::new(file, &mut index);
         let mut buf = vec![b'\0'; 100];
