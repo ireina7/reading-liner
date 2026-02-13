@@ -5,19 +5,18 @@ use crate::{
 };
 use std::io;
 
-/// A stream which can be used to convert between offsets and line-column numbers.
+/// A stream which can be used to convert between offsets and line-column locations.
 #[derive(Debug)]
-pub struct Stream<Reader> {
+pub struct Stream<'index, Reader> {
     reader: Reader,
 
     base: usize, // For future use
-    index: Index,
+    index: &'index mut Index,
     next_offset: usize,
     current_line: usize,
-    buffer: Vec<u8>,
 }
 
-impl<R> Stream<R> {
+impl<'index, R> Stream<'index, R> {
     const DEFAULT_BUF_SIZE: usize = 1024;
 
     #[inline]
@@ -39,28 +38,17 @@ impl<R> Stream<R> {
     pub fn get_index(&self) -> &Index {
         &self.index
     }
-
-    #[inline]
-    pub fn into_index(self) -> Index {
-        self.index
-    }
 }
 
-impl<R: io::Read> Stream<R> {
-    pub fn new(reader: R, buffer_size: usize) -> Self {
+impl<'index, R: io::Read> Stream<'index, R> {
+    pub fn new(reader: R, index: &'index mut Index) -> Self {
         Self {
             reader,
             base: 0,
-            index: Index::new_from_zero(),
+            index,
             next_offset: 0,
             current_line: 0,
-            buffer: vec![0; buffer_size],
         }
-    }
-
-    #[inline]
-    pub fn from_reader(reader: R) -> Self {
-        Self::new(reader, Self::DEFAULT_BUF_SIZE)
     }
 
     #[inline]
@@ -98,19 +86,15 @@ impl<R: io::Read> Stream<R> {
     }
 
     /// Get line and column number from offset
-    pub fn line_index(
-        &mut self,
-        offset: Offset,
-        buf: &mut [u8],
-    ) -> io::Result<line_column::ZeroBased> {
-        let line = self.line_of(offset, buf)?;
+    pub fn locate(&mut self, offset: Offset, buf: &mut [u8]) -> io::Result<line_column::ZeroBased> {
+        let line = self.locate_line(offset, buf)?;
         let line_offset = self.query().get_line_offset(line).unwrap();
         let col = offset - line_offset;
         Ok((line, col.raw()).into())
     }
 
     /// Try to get line of offset without reading
-    pub fn try_line_of(&self, offset: Offset) -> Option<usize> {
+    fn try_line_of(&self, offset: Offset) -> Option<usize> {
         self.query().locate_line(offset)
     }
 
@@ -131,7 +115,7 @@ impl<R: io::Read> Stream<R> {
     }
 
     /// Get line of offset
-    pub fn line_of(&mut self, offset: Offset, buf: &mut [u8]) -> io::Result<usize> {
+    pub fn locate_line(&mut self, offset: Offset, buf: &mut [u8]) -> io::Result<usize> {
         let mut begin = 0;
         loop {
             let n = self.index.len();
@@ -151,11 +135,6 @@ impl<R: io::Read> Stream<R> {
         }
     }
 
-    #[inline]
-    fn read_bytes(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        self.reader.read(buf)
-    }
-
     /// Try to get more bytes and update states
     fn forward(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         let n = self.reader.read(buf)?;
@@ -172,67 +151,6 @@ impl<R: io::Read> Stream<R> {
         Ok(n)
     }
 
-    #[inline]
-    pub fn read_forward(&mut self) -> io::Result<(usize, &[u8])> {
-        let n = self.reader.read(&mut self.buffer[..])?;
-        Ok((n, &self.buffer))
-    }
-
-    /// Get line, column of offset while returning read bytes in `buf`
-    pub fn read_line_of(&mut self, offset: Offset, buf: &mut Vec<u8>) -> io::Result<usize> {
-        let mut begin = 0;
-        loop {
-            let n = self.index.len();
-            if let Some(i) = self.query().from_range_from(begin..).locate_line(offset) {
-                break Ok(begin + i);
-            }
-            if n > 0 {
-                begin = n - 1;
-            }
-
-            let (n_bytes, buffer) = self.read_forward()?;
-            if n_bytes == 0 {
-                if offset.raw() < self.next_offset {
-                    break Ok(self.current_line);
-                }
-                break Err(io_error("Invalid offset, exceed EOF"));
-            }
-            buf.extend(buffer);
-        }
-    }
-
-    /// Get line, column index while returning read bytes in `buf`
-    pub fn read_line_index(
-        &mut self,
-        offset: Offset,
-        buf: &mut Vec<u8>,
-    ) -> io::Result<line_column::ZeroBased> {
-        let line = self.read_line_of(offset, buf)?;
-        let line_offset = self.query().get_line_offset(line).unwrap();
-        let col = offset - line_offset;
-        Ok((line, col.raw()).into())
-    }
-
-    /// Get offset from line-column index while returning read bytes in `buf`
-    pub fn read_offset_of(
-        &mut self,
-        line_index: line_column::ZeroBased,
-        buf: &mut Vec<u8>,
-    ) -> io::Result<Offset> {
-        let (line, col) = line_index.raw();
-        loop {
-            if let Some(offset) = self.query().get_line_offset(line) {
-                break Ok(offset + col);
-            }
-
-            let (n_bytes, buffer) = self.read_forward()?;
-            if n_bytes == 0 {
-                break Err(io_error(format!("Invalid line index: ({}, {})", line, col)));
-            }
-            buf.extend(buffer);
-        }
-    }
-
     /// Drain the reader, consume the reader
     pub fn drain(&mut self, buf: &mut [u8]) -> io::Result<()> {
         loop {
@@ -244,13 +162,7 @@ impl<R: io::Read> Stream<R> {
     }
 }
 
-impl<R: io::Read> From<R> for Stream<R> {
-    fn from(value: R) -> Self {
-        Stream::from_reader(value)
-    }
-}
-
-impl<R: io::Read> io::Read for Stream<R> {
+impl<'index, R: io::Read> io::Read for Stream<'index, R> {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         self.forward(buf)
     }
@@ -264,7 +176,10 @@ fn io_error<S: ToString>(msg: S) -> io::Error {
 #[cfg(test)]
 mod test {
     #![allow(unused_must_use)]
-    use std::fs::File;
+    use std::{
+        fs::File,
+        io::{BufReader, Read},
+    };
 
     use super::*;
 
@@ -272,24 +187,34 @@ mod test {
     fn test_stream_str() {
         let reader = "\nThis is s sim\nple test that\n I have to verify stream reader!";
 
-        let mut stream = Stream::from(reader.as_bytes());
-        let mut buf = vec![b'\0'; 10];
+        let mut index = Index::new_from_zero();
+        // let mut stream = Stream::new(reader.as_bytes(), &mut index);
+        // let mut buf = vec![b'\0'; 10];
         // stream.drain(&mut buf);
-        let ans = stream.line_index(Offset::new(20), &mut buf);
-        assert!(ans.is_ok());
+
+        let stream = Stream::new(reader.as_bytes(), &mut index);
+        let mut reader = BufReader::new(stream);
+        let mut buf = String::new();
+        let src = reader.read_to_string(&mut buf);
+        dbg!(buf);
+
+        let ans = reader.get_ref().query().locate(Offset::new(20));
+        assert!(ans.is_some());
         assert_eq!(ans.unwrap(), (2, 5).into());
+        // dbg!(stream);
     }
 
     #[test]
     fn test_stream_file() {
         let file = File::open("/Users/comcx/Workspace/Repo/stream-locate-converter/Cargo.toml")
             .expect("Failed to open file");
-        let mut stream = Stream::from(file);
+        let mut index = Index::new_from_zero();
+        let mut stream = Stream::new(file, &mut index);
         let mut buf = vec![b'\0'; 100];
-        let ans = stream.line_index(Offset::new(50), &mut buf);
+        let ans = stream.locate(Offset::new(50), &mut buf);
         dbg!(ans);
 
-        let ans = stream.line_index(Offset::new(20), &mut buf);
+        let ans = stream.locate(Offset::new(20), &mut buf);
         dbg!(ans);
     }
 
@@ -297,7 +222,8 @@ mod test {
     fn test_stream_drain() {
         let file = File::open("/Users/comcx/Workspace/Repo/stream-locate-converter/Cargo.toml")
             .expect("Failed to open file");
-        let mut stream = Stream::from(file);
+        let mut index = Index::new_from_zero();
+        let mut stream = Stream::new(file, &mut index);
         let mut buf = vec![b'\0'; 100];
         let ans = stream.drain(&mut buf);
         dbg!(ans);
