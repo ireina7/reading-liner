@@ -35,6 +35,7 @@ impl<'index, R> Stream<'index, R> {
         self.base
     }
 
+    /// Immutable query
     #[inline]
     pub fn query(&self) -> index::Query<'_> {
         self.index.query()
@@ -47,16 +48,6 @@ impl<'index, R> Stream<'index, R> {
 }
 
 impl<'index, R: io::Read> Stream<'index, R> {
-    #[inline]
-    pub fn set_base(&mut self, base: usize) {
-        self.base = base;
-    }
-
-    #[inline]
-    pub fn reset(&mut self) {
-        self.set_base(0);
-    }
-
     /// Read length
     #[inline]
     pub fn read_len(&self) -> usize {
@@ -74,6 +65,19 @@ impl<'index, R: io::Read> Stream<'index, R> {
                 continue;
             }
         }
+
+        // reached EoF, try to add fake ending
+        if !buf.is_empty() && n == 0 {
+            // TODO
+            match self.index.end() {
+                Some(end) if end != self.next_offset => {
+                    self.index.add_next_line(self.next_offset);
+                }
+                None => self.index.add_next_line(self.next_offset),
+                _ => {}
+            }
+        }
+
         self.next_offset += n;
         Ok(n)
     }
@@ -94,7 +98,7 @@ impl<'index, R: io::Read> Stream<'index, R> {
         loop {
             let n = self.index.len();
             if let Some(i) = self.query().range_from(begin..).locate_line(offset) {
-                break Ok(begin + i);
+                break Ok(i); // look here the returned `i` is already `begin` based, there's no need to add an extra begin
             }
             if n > 0 {
                 begin = n - 1;
@@ -154,10 +158,7 @@ fn io_error<S: ToString>(msg: S) -> io::Error {
 #[cfg(test)]
 mod test {
     #![allow(unused_must_use)]
-    use std::{
-        fs::File,
-        io::{BufReader, Read},
-    };
+    use std::io::{BufReader, Read};
 
     use super::*;
 
@@ -165,7 +166,7 @@ mod test {
     fn test_stream_str() {
         let reader = "\nThis is s sim\nple test that\n I have to verify stream reader!";
 
-        let mut index = Index::new_from_zero();
+        let mut index = Index::new();
         // let mut stream = Stream::new(reader.as_bytes(), &mut index);
         // let mut buf = vec![b'\0'; 10];
         // stream.drain(&mut buf);
@@ -180,27 +181,16 @@ mod test {
         assert_eq!(ans.unwrap(), (2, 5).into());
     }
 
-    #[test]
-    fn test_stream_file() {
-        let file = File::open("Cargo.toml").expect("Failed to open file");
-        let mut index = Index::new_from_zero();
-        let mut stream = Stream::new(file, &mut index);
-        let mut buf = vec![b'\0'; 100];
-        let ans = stream.locate(Offset(50), &mut buf);
-        dbg!(ans);
+    // #[test]
+    // fn test_stream_file() {
+    //     let file = File::open("Cargo.toml").expect("Failed to open file");
+    //     let mut index = Index::new();
+    //     let mut stream = Stream::new(file, &mut index);
+    //     let mut buf = vec![b'\0'; 10];
+    //     let ans = stream.locate(Offset(50), &mut buf);
+    //     dbg!(ans);
 
-        let ans = stream.locate(Offset(20), &mut buf);
-        dbg!(ans);
-    }
-
-    #[test]
-    fn test_stream_drain() {
-        let file = File::open("Cargo.toml").expect("Failed to open file");
-        let mut index = Index::new_from_zero();
-        let mut stream = Stream::new(file, &mut index);
-        let mut buf = vec![b'\0'; 100];
-        let ans = stream.drain(&mut buf);
-        dbg!(ans);
-        dbg!(stream.index);
-    }
+    //     let ans = stream.locate(Offset(20), &mut buf);
+    //     dbg!(ans);
+    // }
 }

@@ -6,10 +6,13 @@ Support any type which implements `io::Read`.
 
 The whole design is based on an `Index`, 
 which is composed of line information to convert between byte offsets and line-column locations.
-Once perticuar usage is use the `Stream` as a builder of `Index` or 
+One perticular usage is to use the `Stream` as a builder of `Index` or 
 you can also use it when lazily reading and convert locations at the same time.
 
 This lib should be used at *low-level abstraction*.
+
+## Documentation
+The API is documented: [https://docs.rs/reading-liner](https://docs.rs/reading-liner)
 
 ## Core methods
 ### Immutable queries (best practice)
@@ -35,7 +38,7 @@ use std::{fs, io};
 fn example() -> io::Result<()> {
     // build stream
     let file = fs::File::open("foo.rs")?;
-    let mut index = Index::new_from_zero();
+    let mut index = Index::new();
     let stream = Stream::new(file, &mut index);
 
     // wrap BufReader

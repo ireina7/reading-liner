@@ -1,6 +1,6 @@
 [package]
 name = "reading-liner"
-version = "0.2.1"
+version = "0.3.1"
 edition = "2024"
 license-file = "./LICENSE"
 description = "A Stream reader which can convert between byte offset and line-column numbers. Support any type which implements io::Read."
@@ -9,3 +9,7 @@ repository = "https://github.com/ireina7/reading-liner"
 keywords = ["offset", "converter", "reader", "io"]
 
 [dependencies]
+
+[dev-dependencies]
+rand = "0.10.0"
+quickcheck = "1.1.0"
