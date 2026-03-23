@@ -35,7 +35,7 @@ impl<'index, R> Stream<'index, R> {
         self.base
     }
 
-    /// Immutable query
+    /// Immutable query to further query offsets and line-column locations
     #[inline]
     pub fn query(&self) -> index::Query<'_> {
         self.index.query()
@@ -82,8 +82,28 @@ impl<'index, R: io::Read> Stream<'index, R> {
         Ok(n)
     }
 
-    /// Get line and column number from offset
+    /// Locate the (line, column) position for a given byte `offset`.  
+    ///
     /// NOTE: this method may cause extra reading when the offset input cannot find a location.
+    ///
+    /// This method first resolves the line index via [`locate_line`], then
+    /// computes the column by subtracting the starting offset of that line.
+    ///
+    /// # Parameters
+    /// - `offset`: The target byte offset.
+    /// - `buf`: A temporary buffer used for incremental reading.
+    ///
+    /// # Returns
+    /// - `Ok(ZeroBased(line, column))` if the offset is within bounds.
+    /// - `Err` if the offset exceeds EOF (propagated from [`locate_line`]).
+    ///
+    /// # Invariants
+    /// - The internal index always contains a valid starting offset for every line.
+    /// - Therefore, `line_offset(line)` must succeed for any valid `line`.
+    ///
+    /// # Notes
+    /// - Both line and column are zero-based.
+    /// - Column is computed in **bytes**, not characters (UTF-8 aware handling is not performed here).
     pub fn locate(&mut self, offset: Offset, buf: &mut [u8]) -> io::Result<line_column::ZeroBased> {
         let line = self.locate_line(offset, buf)?;
         let line_offset = self.query().line_offset(line).unwrap();
@@ -91,22 +111,28 @@ impl<'index, R: io::Read> Stream<'index, R> {
         Ok((line, col.raw()).into())
     }
 
-    /// Locate line of byte offset
-    /// NOTE: this method may cause extra reading when the offset input cannot find a location.
+    /// Locate the line index for a given byte `offset`.
+    ///
+    /// This method performs an incremental lookup:
+    /// it first queries the existing line index, and if the offset
+    /// is not covered, it reads more data and extends the index.
+    /// This method may cause extra reading when the offset input cannot find a location.
+    ///
+    /// # Invariants
+    /// - The internal index is non-empty and ends with a sentinel EOF offset.
+    ///
+    /// # Errors
+    /// Returns an error if `offset` exceeds EOF.
     pub fn locate_line(&mut self, offset: Offset, buf: &mut [u8]) -> io::Result<usize> {
         let mut begin = 0;
         loop {
-            let n = self.index.len();
-
             // Invariant: index is non-empty and ends with EOF.
             // Therefore, begin <= query.count() always holds, and range_from(begin..)
             // is guaranteed to be a valid slice (possibly containing only EOF).
             if let Some(i) = self.query().range_from(begin..).locate_line(offset) {
                 break Ok(i); // look here the returned `i` is already `begin` based, there's no need to add an extra begin
             }
-            if n > 0 {
-                begin = n - 1;
-            }
+            begin = self.index.count();
 
             if self.forward(buf)? == 0 {
                 break Err(io_error("Invalid offset, exceed EOF"));
@@ -114,8 +140,24 @@ impl<'index, R: io::Read> Stream<'index, R> {
         }
     }
 
-    /// Get offset from line and column number
-    /// NOTE: this method may cause extra reading when the location input cannot find a offset.
+    /// Encode a (line, column) location into a byte `Offset`.
+    ///
+    /// This method may incrementally extend the internal line index by reading
+    /// additional data if the requested line is not yet available.
+    ///
+    /// # Behavior
+    /// - If the line is already indexed, the offset is computed directly.
+    /// - Otherwise, more data is read and the index is extended until the line
+    ///   becomes available or EOF is reached.
+    ///
+    /// # Returns
+    /// - `Ok(offset)` if the position can be resolved.
+    /// - `Err` if the line index exceeds EOF.
+    ///
+    /// # Notes
+    /// - Column is interpreted as a **byte offset** relative to the start of the line.
+    /// - This method does **not** validate whether the column lies within the bounds
+    ///   of the line.
     pub fn encode(
         &mut self,
         line_index: line_column::ZeroBased,

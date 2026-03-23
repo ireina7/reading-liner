@@ -11,6 +11,9 @@ you can also use it when lazily reading and convert locations at the same time.
 
 This lib should be used at *low-level abstraction*.
 
+I recommend using this crate with [codespan_reporting](https://github.com/brendanzab/codespan) to achieve visual error reporting,
+whose `Files` trait can directly implemented using our `Index`.
+
 ## Documentation
 The API is documented: [https://docs.rs/reading-liner](https://docs.rs/reading-liner)
 

@@ -41,16 +41,21 @@ impl Index {
     }
 
     /// length of index
-    pub fn len(&self) -> usize {
-        self.line_offsets.len()
+    /// The API has guaranteed that self.line_offsets.len() > 0
+    #[inline]
+    pub fn count(&self) -> usize {
+        debug_assert!(!self.line_offsets.is_empty());
+        self.line_offsets.len() - 1
     }
 
     /// ending offset of the source
+    #[inline]
     pub fn end(&self) -> Option<Offset> {
         self.line_offsets.last().copied()
     }
 
     /// into vector of offsets
+    #[inline]
     pub fn into_offsets(self) -> Vec<Offset> {
         self.line_offsets
     }
@@ -120,15 +125,12 @@ impl<'index> Query<'index> {
     /// ```text
     /// slice[range.start .. range.end + 1]
     /// ```
-    ///
     /// This ensures that every line `i` in the resulting view satisfies:
-    ///
     /// ```text
     /// line i = [slice[i], slice[i+1])
     /// ```
     ///
     /// # Panics
-    ///
     /// Panics if:
     /// - `range.start > range.end`
     /// - `range.end > self.count()`
@@ -136,7 +138,6 @@ impl<'index> Query<'index> {
     /// These conditions indicate a violation of the API contract.
     ///
     /// # Performance
-    ///
     /// This operation is zero-copy and does not allocate.
     ///
     /// Invariant:
@@ -164,23 +165,19 @@ impl<'index> Query<'index> {
     /// and no additional adjustment is needed.
     ///
     /// The resulting view satisfies:
-    ///
     /// ```text
     /// line i = [slice[i], slice[i+1])
     /// ```
     ///
     /// # Panics
-    ///
     /// Panics if:
     /// - `range_from.start > self.count()`
     ///
     /// # Edge Cases
-    ///
     /// - If `range_from.start == self.count()`, the returned slice contains only
     ///   the EOF sentinel. This represents an empty range of lines.
     ///
     /// # Performance
-    ///
     /// This operation is zero-copy and does not allocate.
     ///
     /// invariant: self.slice always ends with EOF
@@ -209,7 +206,23 @@ impl Query<'_> {
         self.slice.get(line_no).copied()
     }
 
-    /// Given the number of line `line_no`, returns its start..end offset span.
+    /// Given the number of line `line_no`,
+    /// Returns the byte range of the given line.
+    ///
+    /// The returned range is half-open: `[start, end)`, where `start` is the
+    /// beginning of the line and `end` is the beginning of the next line
+    /// (or EOF for the last line).
+    ///
+    /// # Returns
+    /// - `Some(range)` if the line exists.
+    /// - `None` if the line index is out of bounds.
+    ///
+    /// # Invariants
+    /// - The internal index always contains a sentinel EOF offset,
+    ///   so `line_offset(line_no + 1)` is valid for the last line.
+    ///
+    /// # Notes
+    /// - The range is expressed in **byte offsets**, not character indices.
     pub fn line_span(&self, line_no: usize) -> Option<ops::Range<Offset>> {
         let start = self.line_offset(line_no)?;
         let end = self.line_offset(line_no + 1)?; // it's safe here since we have a fake ending
@@ -241,34 +254,83 @@ impl Query<'_> {
         offset >= begin && offset < end
     }
 
-    /// Locate line number from byte offset
+    /// Locate the line index for a given byte `offset`.
+    ///
+    /// This method performs a binary search over the internal line index to find
+    /// the line whose span contains the given offset.
+    ///
+    /// # Returns
+    /// - `Some(line)` if the offset lies within a known line.
+    /// - `None` if:
+    ///   - the offset is before the beginning of the first line, or
+    ///   - the offset is at or beyond the sentinel EOF offset.
+    ///
+    /// # Invariants
+    /// - `self.slice` is a sorted list of line starting offsets.
+    /// - The last element of `self.slice` is a sentinel EOF offset.
+    /// - Each line `i` corresponds to the half-open interval:
+    ///   `[slice[i], slice[i + 1])`.
+    ///
+    /// # Notes
+    /// - The returned line index is zero-based.
+    /// - If `offset == EOF`, this method returns `None`, since EOF is not
+    ///   considered part of any line.
     #[inline]
     pub fn locate_line(&self, offset: Offset) -> Option<usize> {
         binary_search_between(&self.slice, offset).map(|n| self.begin + n)
     }
 
-    /// Locate line-column numbers from byte offset
+    /// Locate the (line, column) position for a given byte `offset`.
+    ///
+    /// This method uses the existing line index without performing any I/O.
+    /// It resolves the line containing the offset, then computes the column
+    /// as the byte distance from the beginning of that line.
+    ///
+    /// # Returns
+    /// - `Some(ZeroBased(line, column))` if the offset lies within a known range.
+    /// - `None` if the offset is out of bounds or beyond the indexed data.
+    ///
+    /// # Invariants
+    /// - The internal index contains valid starting offsets for all indexed lines.
+    /// - Therefore, `line_offset(line)` is guaranteed to succeed for any line
+    ///   returned by `locate_line`.
+    ///
+    /// # Notes
+    /// - Both line and column are zero-based.
+    /// - Column is measured in **bytes**, not characters.
+    /// - This method does not attempt to extend the index; for streaming input,
+    ///   use the mutable variant instead.
     pub fn locate(&self, offset: Offset) -> Option<line_column::ZeroBased> {
         let line = self.locate_line(offset)?;
         let line_offset = self.line_offset(line).unwrap();
         let col = offset - line_offset;
 
-        let line = self.begin + line;
         Some((line, col.raw()).into())
     }
 
-    /// Encode byte offset from line-column location
+    /// Encode a (line, column) location into a byte `Offset`.
+    ///
+    /// This method uses the existing line index without performing any I/O.
+    /// It validates that the resulting offset lies within the bounds of the line.
+    ///
+    /// # Returns
+    /// - `Some(offset)` if the position is valid.
+    /// - `None` if:
+    ///   - the line does not exist, or
+    ///   - the column is out of bounds.
+    ///
+    /// # Invariants
+    /// - `line_span(line)` returns a half-open range `[start, end)`.
+    ///
+    /// # Notes
+    /// - Column is interpreted as a **byte offset** relative to the start of the line.
+    /// - No UTF-8 character boundary checks are performed.
     pub fn encode(&self, location: line_column::ZeroBased) -> Option<Offset> {
-        let (mut line, col) = location.raw();
-        if line < self.begin {
-            return None;
-        }
-        line -= self.begin;
+        let (line, col) = location.raw();
 
-        if let Some(offset) = self.line_offset(line) {
-            return Some(offset + col);
-        }
-        None
+        let range = self.line_span(line)?;
+        let offset = range.start + col;
+        range.contains(&offset).then_some(offset)
     }
 }
 

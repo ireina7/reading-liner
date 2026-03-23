@@ -34,6 +34,12 @@ impl From<Offset> for usize {
     }
 }
 
+impl Default for Offset {
+    fn default() -> Self {
+        Self(0)
+    }
+}
+
 impl ops::Add for Offset {
     type Output = Offset;
 
