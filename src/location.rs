@@ -13,11 +13,11 @@ impl Offset {
         self.0
     }
 
-    pub fn add(self, that: Self) -> Self {
+    fn plus(self, that: Self) -> Self {
         Self(self.raw() + that.raw())
     }
 
-    pub fn minus(self, that: Self) -> Self {
+    fn minus(self, that: Self) -> Self {
         Self(self.raw() - that.raw())
     }
 }
@@ -28,11 +28,17 @@ impl From<usize> for Offset {
     }
 }
 
+impl From<Offset> for usize {
+    fn from(value: Offset) -> Self {
+        value.raw()
+    }
+}
+
 impl ops::Add for Offset {
     type Output = Offset;
 
     fn add(self, rhs: Offset) -> Self::Output {
-        self.add(rhs)
+        self.plus(rhs)
     }
 }
 
@@ -40,7 +46,7 @@ impl ops::Add<usize> for Offset {
     type Output = Offset;
 
     fn add(self, rhs: usize) -> Self::Output {
-        self.add(rhs.into())
+        self.plus(Offset(rhs))
     }
 }
 
@@ -69,6 +75,17 @@ impl ops::Sub<usize> for Offset {
 
     fn sub(self, rhs: usize) -> Self::Output {
         self.minus(rhs.into())
+    }
+}
+
+/// For convenience
+pub trait OffsetRangeExt {
+    fn to_usize(self) -> ops::Range<usize>;
+}
+
+impl OffsetRangeExt for ops::Range<Offset> {
+    fn to_usize(self) -> ops::Range<usize> {
+        self.start.raw()..self.end.raw()
     }
 }
 

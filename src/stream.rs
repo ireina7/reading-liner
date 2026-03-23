@@ -86,7 +86,7 @@ impl<'index, R: io::Read> Stream<'index, R> {
     /// NOTE: this method may cause extra reading when the offset input cannot find a location.
     pub fn locate(&mut self, offset: Offset, buf: &mut [u8]) -> io::Result<line_column::ZeroBased> {
         let line = self.locate_line(offset, buf)?;
-        let line_offset = self.query().get_line_offset(line).unwrap();
+        let line_offset = self.query().line_offset(line).unwrap();
         let col = offset - line_offset;
         Ok((line, col.raw()).into())
     }
@@ -97,6 +97,10 @@ impl<'index, R: io::Read> Stream<'index, R> {
         let mut begin = 0;
         loop {
             let n = self.index.len();
+
+            // Invariant: index is non-empty and ends with EOF.
+            // Therefore, begin <= query.count() always holds, and range_from(begin..)
+            // is guaranteed to be a valid slice (possibly containing only EOF).
             if let Some(i) = self.query().range_from(begin..).locate_line(offset) {
                 break Ok(i); // look here the returned `i` is already `begin` based, there's no need to add an extra begin
             }
@@ -105,9 +109,6 @@ impl<'index, R: io::Read> Stream<'index, R> {
             }
 
             if self.forward(buf)? == 0 {
-                if offset < self.next_offset {
-                    break Ok(self.current_line);
-                }
                 break Err(io_error("Invalid offset, exceed EOF"));
             }
         }
@@ -122,7 +123,7 @@ impl<'index, R: io::Read> Stream<'index, R> {
     ) -> io::Result<Offset> {
         let (line, col) = line_index.raw();
         loop {
-            if let Some(offset) = self.query().get_line_offset(line) {
+            if let Some(offset) = self.query().line_offset(line) {
                 break Ok(offset + col);
             }
 
@@ -183,7 +184,7 @@ mod test {
 
     // #[test]
     // fn test_stream_file() {
-    //     let file = File::open("Cargo.toml").expect("Failed to open file");
+    //     let file = std::fs::File::open("Cargo.toml").expect("Failed to open file");
     //     let mut index = Index::new();
     //     let mut stream = Stream::new(file, &mut index);
     //     let mut buf = vec![b'\0'; 10];

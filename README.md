@@ -1,8 +1,8 @@
 # reading-liner
-Reading and convert offset and line-column location.  
+Reading and converting offset and line-column location.  
 
 A Stream reader which can convert between byte offset and line-column numbers.
-Support any type which implements `io::Read`.
+Support any type which implements `std::io::Read`.
 
 The whole design is based on an `Index`, 
 which is composed of line information to convert between byte offsets and line-column locations.
