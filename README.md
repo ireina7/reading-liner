@@ -1,7 +1,9 @@
 # reading-liner
-Reading and converting offset and line-column location.  
+A Rust crate for streaming construction of line/column indices over text sources.
 
-A Stream reader which can convert between byte offset and line-column numbers.
+It enables on-the-fly (one-pass) mapping from byte offsets to (line, column) locations while reading from a stream (e.g. a file), without requiring the entire input to be loaded into memory.
+
+It provides a `Stream` reader which can convert between byte offset and line-column numbers.
 Support any type which implements `std::io::Read`.
 
 The whole design is based on an `Index`, 
@@ -11,28 +13,46 @@ you can also use it when lazily reading and convert locations at the same time.
 
 This lib should be used at *low-level abstraction*.
 
-I recommend using this crate with [codespan_reporting](https://github.com/brendanzab/codespan) to achieve visual error reporting,
-whose `Files` trait can directly implemented using our `Index`.
 
-## Documentation
+## 📍 Features
+- Offset → (line, column) mapping
+- True streaming support (no full file buffering required)
+- Consistent with in-memory indexing
+- Single-pass construction
+- Designed to integrate with parsers and error reporting tools (e.g. [codespan_reporting](https://github.com/brendanzab/codespan))
+
+## 🚀 Motivation
+Most existing approaches follow this pattern:
+```rust
+let src = std::fs::read_to_string("file.txt")?;
+let index = build_index(src.as_bytes());
+```
+❌ This has several drawbacks:
+- Requires loading the entire file into memory
+- Not suitable for streaming or large inputs
+- Forces a separation between IO and indexing (often multiple passes)
+
+✅ This crate takes a different approach
+
+It builds the index as the data is being read, enabling:
+- Parsing directly from a stream
+- Accurate location tracking without a second pass
+- Reduced memory footprint for large files
+
+## 🎯 Use Cases
+- Compilers and interpreters
+- Incremental / streaming parsers
+- Large file processing
+- Custom diagnostic tools
+- Language tooling (LSP, linters, etc.)
+
+## 📄 Documentation
 The API is documented at [https://docs.rs/reading-liner](https://docs.rs/reading-liner).
 
-## Core methods
-### Immutable queries (best practice)
-- locate line-column location from byte offset:
-    + `Query::locate(&self, Offset) -> Option<line_column::ZeroBased>`
-- encode offset from line-column location
-    + `Query::encode(&self, line_column::ZeroBased) -> Option<Offset>`
 
-### Mutable queries
-The names are the same with immutable ones, 
-but be careful since these mutable queries may read bytes implicitly.
-- locate line-column location from byte offset:
-    + `Stream::locate(&mut self, Offset) -> io::Result<line_column::ZeroBased>`
-- encode offset from line-column location
-    + `Stream::encode(&mut self, line_column::ZeroBased) -> io::Result<Offset>`
+## 📦 Examples
 
-## Example
+### Load and build index
 ```rust
 use reading_liner::{Stream, location::Offset, Index};
 use std::io::Read;
@@ -53,6 +73,23 @@ fn example() -> io::Result<()> {
     let line_index = index.query().locate(Offset(20)).unwrap();
     dbg!(line_index.one_based());
     Ok(())
+}
+```
+
+### Build index while loading
+```rust
+use reading_liner::{Stream, location::Offset, Index};
+use std::io::Read;
+use std::{fs, io};
+
+fn example(offset: Offset) -> io::Result<()> {
+    let file = std::fs::File::open("foo.rs")?;
+    let mut index = Index::new();
+    let mut stream = Stream::new(file, &mut index);
+    let mut buf = vec![b'\0'; 1024];
+
+    let loc = stream.locate(offset, &mut buf); // on-demand loading
+    dbg!(loc);
 }
 ```
 
