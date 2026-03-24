@@ -4,9 +4,9 @@
 [![Docs.rs][docs-badge]][docs-url]
 
 [crate-url]: https://crates.io/crates/reading-liner
-[crate-badge]: https://img.shields.io/crates/v/reading-liner.svg
+[crate-badge]: https://img.shields.io/crates/v/reading-liner?logo=rust&logoColor=white
 [docs-url]: https://docs.rs/reading-liner
-[docs-badge]: https://docs.rs/reading-liner/badge.svg
+[docs-badge]: https://img.shields.io/docsrs/reading-liner?logo=docsdotrs&logoColor=white&label=docs
 
 A Rust crate for streaming construction of line/column indices over text sources.
 
