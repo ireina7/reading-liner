@@ -1,4 +1,13 @@
 # reading-liner
+
+[![Crates.io][crate-badge]][crate-url]
+[![Docs.rs][docs-badge]][docs-url]
+
+[crate-url]: https://crates.io/crates/reading-liner
+[crate-badge]: https://img.shields.io/crates/v/reading-liner.svg
+[docs-url]: https://docs.rs/reading-liner
+[docs-badge]: https://docs.rs/reading-liner/badge.svg
+
 A Rust crate for streaming construction of line/column indices over text sources.
 
 It enables on-the-fly (one-pass) mapping from byte offsets to (line, column) locations while reading from a stream (e.g. a file), without requiring the entire input to be loaded into memory.
