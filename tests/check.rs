@@ -1,37 +1,106 @@
-use quickcheck::{Arbitrary, quickcheck};
+use quickcheck::Arbitrary;
+use quickcheck_macros::quickcheck;
 use reading_liner::location::line_column::ZeroBased;
 use reading_liner::{Index, Stream, location::Offset};
-use std::io;
 use std::io::Read;
+use std::io::{self, BufReader};
 
-quickcheck! {
-    /// Built index is valid
-    fn check_index(src: Source) -> bool {
-        let s = src.build();
-        let checker = Checker::from_bytes(s.as_bytes());
-        let index = build_index(s.as_bytes());
+const LOOP: usize = 1000;
 
-        checker.index == index.into_offsets()
+/// Check the built index is valid
+#[quickcheck]
+fn check_index(src: Source) -> bool {
+    let s = src.build();
+    let checker = Checker::from_bytes(s.as_bytes());
+    let index = build_index(s.as_bytes());
+
+    checker.index == index.into_offsets()
+}
+
+/// Check Querying location is valid
+#[quickcheck]
+fn check_location(src: Source) -> bool {
+    let s = src.build();
+    let checker = Checker::from_bytes(s.as_bytes());
+    let index = build_index(s.as_bytes());
+
+    for _ in 0..LOOP {
+        let i = rand::random_range(0..s.len() + 10);
+        let offset = Offset(i);
+
+        let loc0 = checker.locate(offset);
+        let loc1 = index.query().locate(offset);
+        if loc0 != loc1 {
+            return false;
+        }
     }
+    true
+}
 
-    /// Querying location is valid
-    fn check_location(src: Source) -> bool {
-        let s = src.build();
-        let checker = Checker::from_bytes(s.as_bytes());
-        let index = build_index(s.as_bytes());
+/// Check incremental Querying location is valid
+#[quickcheck]
+fn check_incremental(src: Source) -> bool {
+    let s = src.build();
+    let checker = Checker::from_bytes(s.as_bytes());
+    let mut index = Index::new();
+    let mut stream = Stream::new(s.as_bytes(), &mut index);
+    let mut buf = vec![b'\0'; 10];
 
-        const LOOP: usize = 1000;
-        for _ in 0..LOOP {
-            let i = rand::random_range(0..s.len() + 10);
-            let offset = Offset(i);
+    for _ in 0..LOOP {
+        let i = rand::random_range(0..s.len() + 10);
+        let offset = Offset(i);
 
-            let loc0 = checker.locate(offset);
-            let loc1 = index.query().locate(offset);
-            if loc0 != loc1 {
+        let loc0 = checker.locate(offset);
+        let loc1 = stream.locate(offset, &mut buf).ok();
+        if loc0 != loc1 {
+            return false;
+        }
+
+        if let Some(loc0) = loc0
+            && loc0.line > 0
+        {
+            let i = rand::random_range(0..loc0.line);
+            let loc3 = stream.query().range_from(loc0.line - i..).locate(offset);
+            let Some(loc3) = loc3 else {
+                return false;
+            };
+            if loc0 != loc3 {
                 return false;
             }
+
+            let max = stream.get_index().count();
+            if max - loc0.line > 1 {
+                let i = rand::random_range(1..max - loc0.line);
+                let loc3 = stream.query().range_from(loc0.line + i..).locate(offset);
+                if loc3.is_some() {
+                    return false;
+                }
+            }
         }
-        true
+    }
+    true
+}
+
+/// Test reading file IO
+#[test]
+fn test_stream_file() {
+    let file = std::fs::File::open("./tests/xiao_yao_you.txt").expect("Failed to open file");
+    let mut s = String::new();
+    let mut reader = BufReader::new(file);
+    reader.read_to_string(&mut s).expect("failed to read file");
+    let checker = Checker::from_bytes(s.as_bytes());
+
+    let file = std::fs::File::open("./tests/xiao_yao_you.txt").expect("Failed to open file");
+    let mut index = Index::new();
+    let mut stream = Stream::new(file, &mut index);
+    let mut buf = vec![b'\0'; 512];
+
+    for _ in 0..LOOP {
+        let i = rand::random_range(0..s.len() + 10);
+        let offset = Offset(i);
+        let loc0 = checker.locate(offset);
+        let loc1 = stream.locate(offset, &mut buf);
+        assert_eq!(loc0, loc1.ok());
     }
 }
 

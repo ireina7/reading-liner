@@ -1,3 +1,10 @@
+//! The central Reader of this crate.
+//!
+//! The reader [Stream] wraps any types implementing [std::io::Read] and an extra [Index].
+//! [Stream] can be used and passed as common reader. When consumed, the [Stream] is gone and the extra [Index] can be used.
+//!
+//! If you want to read and query locations simutaneously, [Index] can be reborrowed from [Stream].
+
 use crate::{
     index::{self, Index},
     location::{Offset, line_column},
@@ -5,6 +12,8 @@ use crate::{
 use std::io;
 
 /// A stream which can be used to convert between offsets and line-column locations.
+///
+/// [Index] is a mutable reference to ensure that we can still refer to the index after consuming the whole [Stream].
 #[derive(Debug)]
 pub struct Stream<'index, Reader> {
     reader: Reader,
@@ -201,20 +210,15 @@ fn io_error<S: ToString>(msg: S) -> io::Error {
 #[cfg(test)]
 mod test {
     #![allow(unused_must_use)]
+    use super::*;
     use std::io::{BufReader, Read};
 
-    use super::*;
+    static SRC: &'static str = "\nThis is s sim\nple test that\n I have to verify stream reader!";
 
     #[test]
-    fn test_stream_str() {
-        let reader = "\nThis is s sim\nple test that\n I have to verify stream reader!";
-
+    fn test_stream_str_buf() {
         let mut index = Index::new();
-        // let mut stream = Stream::new(reader.as_bytes(), &mut index);
-        // let mut buf = vec![b'\0'; 10];
-        // stream.drain(&mut buf);
-
-        let stream = Stream::new(reader.as_bytes(), &mut index);
+        let stream = Stream::new(SRC.as_bytes(), &mut index);
         let mut reader = BufReader::new(stream);
         let mut buf = String::new();
         reader.read_to_string(&mut buf).unwrap();
@@ -224,16 +228,26 @@ mod test {
         assert_eq!(ans.unwrap(), (2, 5).into());
     }
 
-    // #[test]
-    // fn test_stream_file() {
-    //     let file = std::fs::File::open("Cargo.toml").expect("Failed to open file");
-    //     let mut index = Index::new();
-    //     let mut stream = Stream::new(file, &mut index);
-    //     let mut buf = vec![b'\0'; 10];
-    //     let ans = stream.locate(Offset(50), &mut buf);
-    //     dbg!(ans);
+    #[test]
+    fn test_stream_str_drain() {
+        let mut index = Index::new();
+        let mut stream = Stream::new(SRC.as_bytes(), &mut index);
+        let mut buf = vec![b'\0'; 10];
+        stream.drain(&mut buf);
 
-    //     let ans = stream.locate(Offset(20), &mut buf);
-    //     dbg!(ans);
-    // }
+        let ans = stream.query().locate(Offset(20));
+        assert!(ans.is_some());
+        assert_eq!(ans.unwrap(), (2, 5).into());
+    }
+
+    #[test]
+    fn test_stream_str_incremental() {
+        let mut index = Index::new();
+        let mut stream = Stream::new(SRC.as_bytes(), &mut index);
+        let mut buf = vec![b'\0'; 10];
+
+        let ans = stream.locate(Offset(20), &mut buf);
+        assert!(ans.is_ok());
+        assert_eq!(ans.unwrap(), (2, 5).into());
+    }
 }

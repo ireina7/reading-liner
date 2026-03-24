@@ -1,3 +1,9 @@
+//! Location types
+//!
+//! [Offset] is byte based offset.
+//!
+//! Line-column locations are further divided as. [line_column::ZeroBased] and [line_column::OneBased].
+
 use std::ops;
 
 /// Zero-based offset of bytes, only BYTES

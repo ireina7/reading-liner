@@ -15,7 +15,7 @@ I recommend using this crate with [codespan_reporting](https://github.com/brenda
 whose `Files` trait can directly implemented using our `Index`.
 
 ## Documentation
-The API is documented: [https://docs.rs/reading-liner](https://docs.rs/reading-liner)
+The API is documented at [https://docs.rs/reading-liner](https://docs.rs/reading-liner).
 
 ## Core methods
 ### Immutable queries (best practice)
@@ -55,4 +55,6 @@ fn example() -> io::Result<()> {
     Ok(())
 }
 ```
+
+For more examples, please refer to [tests](./tests/check.rs)
 

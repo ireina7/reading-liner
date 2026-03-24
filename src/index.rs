@@ -1,3 +1,13 @@
+//! The whole design of this crate is based on this module.
+//! The core types are [Index] and [Query].
+//!
+//! Type [Index] is an index for fast locating line-column location of offset and
+//! encoding line-column location to offset.
+//!
+//! Type [Index] alone cannot do any search or locatings. one must use [Index::query] to locate offset.
+//! The core algorithm is based on binary search.
+//! [Query] can also be 'sliced' safely.
+
 use std::ops;
 
 use crate::location::{Offset, line_column};
