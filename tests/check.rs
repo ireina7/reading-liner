@@ -1,6 +1,7 @@
 use quickcheck::Arbitrary;
 use quickcheck_macros::quickcheck;
 use reading_liner::location::line_column::ZeroBased;
+use reading_liner::stream::IndexRef;
 use reading_liner::{Index, Stream, location::Offset};
 use std::io::Read;
 use std::io::{self, BufReader};
@@ -43,7 +44,7 @@ fn check_incremental(src: Source) -> bool {
     let s = src.build();
     let checker = Checker::from_bytes(s.as_bytes());
     let mut index = Index::new();
-    let mut stream = Stream::new(s.as_bytes(), &mut index);
+    let mut stream = Stream::new(s.as_bytes(), IndexRef::Direct(&mut index));
     let mut buf = vec![b'\0'; 10];
 
     for _ in 0..LOOP {
@@ -60,7 +61,11 @@ fn check_incremental(src: Source) -> bool {
             && loc0.line > 0
         {
             let i = rand::random_range(0..loc0.line);
-            let loc3 = stream.query().range_from(loc0.line - i..).locate(offset);
+            let loc3 = stream
+                .get_index()
+                .query()
+                .range_from(loc0.line - i..)
+                .locate(offset);
             let Some(loc3) = loc3 else {
                 return false;
             };
@@ -71,7 +76,11 @@ fn check_incremental(src: Source) -> bool {
             let max = stream.get_index().count();
             if max - loc0.line > 1 {
                 let i = rand::random_range(1..max - loc0.line);
-                let loc3 = stream.query().range_from(loc0.line + i..).locate(offset);
+                let loc3 = stream
+                    .get_index()
+                    .query()
+                    .range_from(loc0.line + i..)
+                    .locate(offset);
                 if loc3.is_some() {
                     return false;
                 }
@@ -92,7 +101,7 @@ fn test_stream_file() {
 
     let file = std::fs::File::open("./tests/xiao_yao_you.txt").expect("Failed to open file");
     let mut index = Index::new();
-    let mut stream = Stream::new(file, &mut index);
+    let mut stream = Stream::new(file, IndexRef::Direct(&mut index));
     let mut buf = vec![b'\0'; 512];
 
     for _ in 0..LOOP {
@@ -189,7 +198,7 @@ impl Arbitrary for Source {
 
 fn build_index(s: &[u8]) -> Index {
     let mut index = Index::new();
-    let stream = Stream::new(s, &mut index);
+    let stream = Stream::new(s, IndexRef::Direct(&mut index));
     let mut reader = io::BufReader::new(stream);
     let mut buf = String::new();
     reader.read_to_string(&mut buf).unwrap();

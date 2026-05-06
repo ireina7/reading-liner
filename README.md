@@ -63,7 +63,7 @@ The API is documented at [https://docs.rs/reading-liner](https://docs.rs/reading
 
 ### Load and build index
 ```rust
-use reading_liner::{Stream, location::Offset, Index};
+use reading_liner::{Stream, location::Offset, Index, IndexRef};
 use std::io::Read;
 use std::{fs, io};
 
@@ -71,7 +71,7 @@ fn example() -> io::Result<()> {
     // build stream
     let file = fs::File::open("foo.rs")?;
     let mut index = Index::new();
-    let stream = Stream::new(file, &mut index);
+    let stream = Stream::new(file, IndexRef::Direct(&mut index));
 
     // wrap BufReader
     let mut reader = io::BufReader::new(stream);
@@ -85,16 +85,19 @@ fn example() -> io::Result<()> {
 }
 ```
 
+> `IndexRef` supports both exclusive ownership (`IndexRef::Direct`) and single-threaded aliasing
+> via `IndexRef::Shared(Rc<RefCell<Index>>)`, so the same index can be queried from multiple places.
+
 ### Build index while loading
 ```rust
-use reading_liner::{Stream, location::Offset, Index};
+use reading_liner::{Stream, location::Offset, Index, IndexRef};
 use std::io::Read;
 use std::{fs, io};
 
 fn example(offset: Offset) -> io::Result<()> {
     let file = std::fs::File::open("foo.rs")?;
     let mut index = Index::new();
-    let mut stream = Stream::new(file, &mut index);
+    let mut stream = Stream::new(file, IndexRef::Direct(&mut index));
     let mut buf = vec![b'\0'; 1024];
 
     let loc = stream.locate(offset, &mut buf); // on-demand loading

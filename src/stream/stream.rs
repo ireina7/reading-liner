@@ -1,31 +1,35 @@
-//! The central Reader of this crate.
-//!
-//! The reader [Stream] wraps any types implementing [std::io::Read] and an extra [Index].
-//! [Stream] can be used and passed as common reader. When consumed, the [Stream] is gone and the extra [Index] can be used.
-//!
-//! If you want to read and query locations simutaneously, [Index] can be reborrowed from [Stream].
-
 use crate::{
-    index::{self, Index},
     location::{Offset, line_column},
+    stream::alias::{Guard, IndexRef, MutGuard},
 };
 use std::io;
 
 /// A stream which can be used to convert between offsets and line-column locations.
 ///
-/// [Index] is a mutable reference to ensure that we can still refer to the index after consuming the whole [Stream].
+/// The stream records line offsets into an external [crate::Index] while reading.
+/// This allows `Stream` to support incremental location lookups without consuming
+/// the index.
+///
+/// `Stream` accepts an [`IndexRef`], so it can operate in either of two modes:
+///
+/// - exclusive ownership via `IndexRef::Direct(&mut Index)`;
+/// - aliased single-threaded sharing via `IndexRef::Shared(Rc<RefCell<Index>>)`,
+///   which is useful when multiple callers need to query the same index.
+///
+/// The shared mode is intentionally single-threaded: it relies on [`RefCell`]
+/// runtime borrow checking and does not provide `Sync`/`Send` guarantees.
 #[derive(Debug)]
 pub struct Stream<'index, Reader> {
     reader: Reader,
+    index: IndexRef<'index>,
 
-    base: usize, // For future use
-    index: &'index mut Index,
     next_offset: Offset,
     current_line: usize,
+    base: usize, // For future use
 }
 
 impl<'index, R> Stream<'index, R> {
-    pub fn new(reader: R, index: &'index mut Index) -> Self {
+    pub fn new(reader: R, index: IndexRef<'index>) -> Self {
         Self {
             reader,
             base: 0,
@@ -44,15 +48,14 @@ impl<'index, R> Stream<'index, R> {
         self.base
     }
 
-    /// Immutable query to further query offsets and line-column locations
     #[inline]
-    pub fn query(&self) -> index::Query<'_> {
-        self.index.query()
+    pub fn get_index(&self) -> Guard<'_> {
+        self.index.get()
     }
 
     #[inline]
-    pub fn get_index(&self) -> &Index {
-        &self.index
+    pub fn get_index_mut(&mut self) -> MutGuard<'_> {
+        self.index.get_mut()
     }
 }
 
@@ -70,7 +73,9 @@ impl<'index, R: io::Read> Stream<'index, R> {
         for (offset, b) in buf.iter().take(n).enumerate() {
             if *b == b'\n' {
                 self.current_line += 1;
-                self.index.add_next_line(self.next_offset + offset + 1); // next line begin
+                let next_offset = self.next_offset;
+                self.get_index_mut().add_next_line(next_offset + offset + 1); // next line begin
+
                 continue;
             }
         }
@@ -78,11 +83,14 @@ impl<'index, R: io::Read> Stream<'index, R> {
         // reached EoF, try to add fake ending
         if !buf.is_empty() && n == 0 {
             // TODO
-            match self.index.end() {
-                Some(end) if end != self.next_offset => {
-                    self.index.add_next_line(self.next_offset);
+            let end = self.get_index().end();
+            let next_offset = self.next_offset;
+
+            match end {
+                Some(end) if end != next_offset => {
+                    self.get_index_mut().add_next_line(next_offset);
                 }
-                None => self.index.add_next_line(self.next_offset),
+                None => self.get_index_mut().add_next_line(next_offset),
                 _ => {}
             }
         }
@@ -115,7 +123,7 @@ impl<'index, R: io::Read> Stream<'index, R> {
     /// - Column is computed in **bytes**, not characters (UTF-8 aware handling is not performed here).
     pub fn locate(&mut self, offset: Offset, buf: &mut [u8]) -> io::Result<line_column::ZeroBased> {
         let line = self.locate_line(offset, buf)?;
-        let line_offset = self.query().line_offset(line).unwrap();
+        let line_offset = self.get_index().query().line_offset(line).unwrap();
         let col = offset - line_offset;
         Ok((line, col.raw()).into())
     }
@@ -138,10 +146,15 @@ impl<'index, R: io::Read> Stream<'index, R> {
             // Invariant: index is non-empty and ends with EOF.
             // Therefore, begin <= query.count() always holds, and range_from(begin..)
             // is guaranteed to be a valid slice (possibly containing only EOF).
-            if let Some(i) = self.query().range_from(begin..).locate_line(offset) {
+            if let Some(i) = self
+                .get_index()
+                .query()
+                .range_from(begin..)
+                .locate_line(offset)
+            {
                 break Ok(i); // look here the returned `i` is already `begin` based, there's no need to add an extra begin
             }
-            begin = self.index.count();
+            begin = self.get_index().count();
 
             if self.forward(buf)? == 0 {
                 break Err(io_error("Invalid offset, exceed EOF"));
@@ -174,7 +187,7 @@ impl<'index, R: io::Read> Stream<'index, R> {
     ) -> io::Result<Offset> {
         let (line, col) = line_index.raw();
         loop {
-            if let Some(offset) = self.query().line_offset(line) {
+            if let Some(offset) = self.get_index().query().line_offset(line) {
                 break Ok(offset + col);
             }
 
@@ -210,20 +223,26 @@ fn io_error<S: ToString>(msg: S) -> io::Error {
 #[cfg(test)]
 mod test {
     #![allow(unused_must_use)]
+    use crate::Index;
+
     use super::*;
-    use std::io::{BufReader, Read};
+    use std::{
+        cell::RefCell,
+        io::{BufReader, Read},
+        rc::Rc,
+    };
 
     static SRC: &'static str = "\nThis is s sim\nple test that\n I have to verify stream reader!";
 
     #[test]
     fn test_stream_str_buf() {
         let mut index = Index::new();
-        let stream = Stream::new(SRC.as_bytes(), &mut index);
+        let stream = Stream::new(SRC.as_bytes(), IndexRef::Direct(&mut index));
         let mut reader = BufReader::new(stream);
         let mut buf = String::new();
         reader.read_to_string(&mut buf).unwrap();
 
-        let ans = reader.get_ref().query().locate(Offset(20));
+        let ans = reader.get_ref().get_index().query().locate(Offset(20));
         assert!(ans.is_some());
         assert_eq!(ans.unwrap(), (2, 5).into());
     }
@@ -231,11 +250,11 @@ mod test {
     #[test]
     fn test_stream_str_drain() {
         let mut index = Index::new();
-        let mut stream = Stream::new(SRC.as_bytes(), &mut index);
+        let mut stream = Stream::new(SRC.as_bytes(), IndexRef::Direct(&mut index));
         let mut buf = vec![b'\0'; 10];
         stream.drain(&mut buf);
 
-        let ans = stream.query().locate(Offset(20));
+        let ans = stream.get_index().query().locate(Offset(20));
         assert!(ans.is_some());
         assert_eq!(ans.unwrap(), (2, 5).into());
     }
@@ -243,11 +262,28 @@ mod test {
     #[test]
     fn test_stream_str_incremental() {
         let mut index = Index::new();
-        let mut stream = Stream::new(SRC.as_bytes(), &mut index);
+        let mut stream = Stream::new(SRC.as_bytes(), IndexRef::Direct(&mut index));
         let mut buf = vec![b'\0'; 10];
 
         let ans = stream.locate(Offset(20), &mut buf);
         assert!(ans.is_ok());
+        assert_eq!(ans.unwrap(), (2, 5).into());
+    }
+
+    #[test]
+    fn test_stream_str_incremental_rc() {
+        let index = Index::new();
+        let index = Rc::new(RefCell::new(index));
+
+        let mut stream = Stream::new(SRC.as_bytes(), IndexRef::Shared(index.clone()));
+        let mut buf = vec![b'\0'; 10];
+
+        let ans = stream.locate(Offset(20), &mut buf);
+        assert!(ans.is_ok());
+        assert_eq!(ans.unwrap(), (2, 5).into());
+
+        let ans = index.borrow().query().locate(Offset(20));
+        assert!(ans.is_some());
         assert_eq!(ans.unwrap(), (2, 5).into());
     }
 }
